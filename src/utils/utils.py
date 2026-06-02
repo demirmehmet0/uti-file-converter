@@ -86,6 +86,34 @@ def resolve_source_path(input_file):
     return getattr(input_file, "path", None)
 
 
+def materialize_source_path(input_file, redis_db):
+    """Return a real on-disk path for the conversion tools to read.
+
+    Files now travel as Redis-backed BinaryFile references (no /storage path),
+    so the bytes are pulled from Redis and written to a temp file. A legacy
+    input that still carries a valid `path` is used as-is for back-compat.
+    """
+    from sdks.novavision.src.media.file import BinaryFile
+
+    if input_file is None:
+        return None
+
+    legacy_path = resolve_source_path(input_file)
+    if legacy_path and os.path.exists(legacy_path):
+        return legacy_path
+
+    binary = BinaryFile.get_frame(input_file, redis_db)
+    if binary is None or not binary.value:
+        return None
+
+    ext = os.path.splitext(binary.name)[1] or ".bin"
+    tmp_path = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4().hex}{ext}")
+    with open(tmp_path, "wb") as f:
+        f.write(binary.value)
+
+    return tmp_path
+
+
 def _param(request, name, default=None):
     """Safely read a request param; return default if absent or on error."""
     try:

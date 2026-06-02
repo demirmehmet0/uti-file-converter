@@ -1,5 +1,5 @@
-from typing import Optional, Union, Literal, List
-from pydantic import BaseModel, Field, validator
+from typing import Optional, Union, Literal, Dict
+from pydantic import validator
 
 from sdks.novavision.src.base.model import (
     Package,
@@ -11,22 +11,18 @@ from sdks.novavision.src.base.model import (
     Outputs,
     Response,
     Request,
+    BinaryFile,
 )
 
 
 # ---------------------------------------------------------------------------
 # Data carrier
 # ---------------------------------------------------------------------------
-# There is no native "File" Nova type, so we define a lightweight model that
-# mirrors the metadata other packages expose for media. The converted file is
-# written to /storage and only its path + metadata travel in the response, so a
-# downstream FileSave package can pick it up from disk.
-class File(BaseModel):
-    uID: Optional[str] = None
-    name: str
-    path: str
-    mimeType: str
-    encoding: Optional[str] = None
+# Files travel between packages exactly like images: the raw bytes are stored
+# in Redis and only a reference (`r_key`) + metadata ride in the response.
+# `BinaryFile` (base model) is that carrier; a downstream package re-hydrates
+# the bytes from Redis instead of reading a /storage path.
+File = BinaryFile
 
 
 # ---------------------------------------------------------------------------
@@ -34,16 +30,15 @@ class File(BaseModel):
 # ---------------------------------------------------------------------------
 class InputFile(Input):
     name: Literal["inputFile"] = "inputFile"
-    value: Union[List[File], File]
+    value: Union[Dict, BinaryFile]
     type: str = "object"
 
     @validator("type", pre=True, always=True)
     def set_type_based_on_value(cls, value, values):
         value = values.get("value")
-        if isinstance(value, File):
-            return "object"
-        elif isinstance(value, list):
+        if isinstance(value, list):
             return "list"
+        return "object"
 
     class Config:
         title = "File"
@@ -54,16 +49,15 @@ class InputFile(Input):
 # ---------------------------------------------------------------------------
 class OutputFile(Output):
     name: Literal["outputFile"] = "outputFile"
-    value: Union[List[File], File]
+    value: Union[Dict, BinaryFile]
     type: str = "object"
 
     @validator("type", pre=True, always=True)
     def set_type_based_on_value(cls, value, values):
         value = values.get("value")
-        if isinstance(value, File):
-            return "object"
-        elif isinstance(value, list):
+        if isinstance(value, list):
             return "list"
+        return "object"
 
     class Config:
         title = "File"
@@ -105,6 +99,7 @@ class ConfigResolution(Config):
         pixel canvas size from the physical page size.
     """
     name: Literal["ConfigResolution"] = "ConfigResolution"
+    group: Literal["Geometry"] = "Geometry"
     value: Union[OptionDpi300, OptionDpi600]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -139,6 +134,7 @@ class ConfigPageSize(Config):
         as (PageSize * DPI) / 72.
     """
     name: Literal["ConfigPageSize"] = "ConfigPageSize"
+    group: Literal["Geometry"] = "Geometry"
     value: Union[OptionPageA4, OptionPageLetter]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -174,6 +170,7 @@ class ConfigColorSpace(Config):
         cupsBitsPerColor is fixed at 8.
     """
     name: Literal["ConfigColorSpace"] = "ConfigColorSpace"
+    group: Literal["Color"] = "Color"
     value: Union[OptionColorSRGB, OptionColorSGray]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -216,6 +213,7 @@ class OptionDuplexTumble(Config):
 class ConfigDuplex(Config):
     """Duplex (double-sided) printing mode."""
     name: Literal["ConfigDuplex"] = "ConfigDuplex"
+    group: Literal["PrintJob"] = "PrintJob"
     value: Union[OptionDuplexSimplex, OptionDuplexNoTumble, OptionDuplexTumble]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -257,6 +255,7 @@ class OptionTrayAlternate(Config):
 class ConfigMediaPosition(Config):
     """MediaPosition (input tray)."""
     name: Literal["ConfigMediaPosition"] = "ConfigMediaPosition"
+    group: Literal["PrintJob"] = "PrintJob"
     value: Union[OptionTrayAuto, OptionTrayMain, OptionTrayAlternate]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -288,6 +287,7 @@ class OptionMediaPhoto(Config):
 class ConfigMediaType(Config):
     """MediaType. Photo lets the printer raise quality / reduce droplet size."""
     name: Literal["ConfigMediaType"] = "ConfigMediaType"
+    group: Literal["PrintJob"] = "PrintJob"
     value: Union[OptionMediaPlain, OptionMediaPhoto]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"

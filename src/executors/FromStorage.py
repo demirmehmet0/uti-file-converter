@@ -1,13 +1,13 @@
 
 import os
 import sys
-import uuid
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../../../'))
 
 from sdks.novavision.src.base.component import Component
 from sdks.novavision.src.helper.executor import Executor
-from components.FileConverter.src.models.PackageModel import PackageModel, File
+from sdks.novavision.src.media.file import BinaryFile
+from components.FileConverter.src.models.PackageModel import PackageModel
 from components.FileConverter.src.utils.response import build_response_from_storage
 from components.FileConverter.src.utils.utils import convert_file, download_from_storage, build_options
 
@@ -28,13 +28,24 @@ class FromStorage(Component):
         source_path = download_from_storage(self.storage_id)
         options = build_options(self.request, self.target_format)
         result = convert_file(source_path, self.target_format, options)
-        self.file = File(
-            uID=str(uuid.uuid4()),
+
+        with open(result["path"], "rb") as f:
+            content = f.read()
+
+        self.file = BinaryFile.create(
             name=result["name"],
-            path=result["path"],
-            mimeType=result["mimeType"],
-            encoding="bytes",
+            mime_type=result["mimeType"],
+            value=content,
         )
+        self.file = BinaryFile.set_frame(
+            self.file, package_uID=self.uID, redis_db=self.redis_db
+        )
+
+        try:
+            os.remove(result["path"])
+        except OSError:
+            pass
+
         return build_response_from_storage(context=self)
 
 
