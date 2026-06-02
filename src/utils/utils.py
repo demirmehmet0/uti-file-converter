@@ -3,6 +3,7 @@ import os
 import uuid
 import shutil
 import hashlib
+import tempfile
 import urllib.request
 import subprocess
 
@@ -128,15 +129,31 @@ def _convert_image(source_path, out_path, target_ext):
     img.save(out_path, save_fmt)
 
 
+def _resolve_binary(*names):
+    """Return the first binary name that exists on PATH, else None."""
+    for name in names:
+        if shutil.which(name):
+            return name
+    return None
+
+
 def _convert_document(source_path, target_ext, out_path):
     """Document conversion via LibreOffice headless.
 
     Requires the `libreoffice`/`soffice` binary in the container. LibreOffice
     writes <base>.<ext> into the output dir; rename it to our unique out_path.
     """
+    soffice = _resolve_binary("libreoffice", "soffice")
+    if soffice is None:
+        raise RuntimeError(
+            "FileConverter - LibreOffice not found. Install it in the runtime "
+            "(e.g. `apt-get install -y libreoffice` or `libreoffice-core`) so "
+            "the `libreoffice`/`soffice` binary is on PATH."
+        )
+
     out_dir = os.path.dirname(out_path)
     subprocess.run(
-        ["libreoffice", "--headless", "--convert-to", target_ext,
+        [soffice, "--headless", "--convert-to", target_ext,
          "--outdir", out_dir, source_path],
         check=True, capture_output=True,
     )
@@ -147,22 +164,64 @@ def _convert_document(source_path, target_ext, out_path):
         shutil.move(produced, out_path)
 
 
-def _convert_printer(source_path, out_path, target_ext):
-    """Printer/raster targets.
+# Ghostscript output device for each printer/raster target. These devices ship
+# with Ghostscript itself, so no cups-filters dependency is needed.
+PRINTER_GS_DEVICE = {
+    "ps": "ps2write",
+    "pwg": "pwgraster",     # PWG Raster
+    "urf": "appleraster",   # Apple Raster (URF family)
+    "pcl": "ljet4",         # PCL5e (mono)
+    "pclxl": "pxlmono",     # PCL-XL / PCL6 (mono)
+}
 
-    PostScript is produced with Ghostscript. PCL/PCL-XL/PWG-raster/URF require
-    cups-filters (e.g. pdftoraster, rastertopclx) and are not wired yet.
+
+def _ensure_pdf(source_path):
+    """Return a PDF path for source_path, converting first if necessary.
+
+    Ghostscript printer devices consume PostScript/PDF, so non-PDF sources are
+    turned into a temporary PDF (images via Pillow, documents via LibreOffice).
     """
-    if target_ext == "ps":
-        subprocess.run(
-            ["gs", "-dNOPAUSE", "-dBATCH", "-sDEVICE=ps2write",
-             f"-sOutputFile={out_path}", source_path],
-            check=True, capture_output=True,
-        )
+    ext = os.path.splitext(source_path)[1].lower().lstrip(".")
+    if ext in ("pdf", "ps"):
+        return source_path
+
+    base = os.path.splitext(os.path.basename(source_path))[0]
+    pdf_path = os.path.join(tempfile.gettempdir(), f"{base}_{uuid.uuid4().hex[:8]}.pdf")
+
+    if ext in IMAGE_EXTS:
+        img = PILImage.open(source_path)
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        img.save(pdf_path, "PDF")
     else:
-        raise NotImplementedError(
-            f"FileConverter - '{target_ext}' output requires cups-filters; not yet wired."
+        _convert_document(source_path, "pdf", pdf_path)
+
+    return pdf_path
+
+
+def _convert_printer(source_path, out_path, target_ext):
+    """Printer/raster targets (ps, pwg, urf, pcl, pclxl) via Ghostscript.
+
+    The source is first normalised to PDF, then Ghostscript renders it with the
+    device mapped in PRINTER_GS_DEVICE. No cups-filters dependency is required.
+    """
+    device = PRINTER_GS_DEVICE.get(target_ext)
+    if device is None:
+        raise ValueError(f"FileConverter - Unsupported printer format: {target_ext}")
+
+    gs = _resolve_binary("gs", "ghostscript")
+    if gs is None:
+        raise RuntimeError(
+            "FileConverter - Ghostscript not found. Install it in the runtime "
+            "(e.g. `apt-get install -y ghostscript`)."
         )
+
+    pdf_source = _ensure_pdf(source_path)
+    subprocess.run(
+        [gs, "-dNOPAUSE", "-dBATCH", "-dSAFER", f"-sDEVICE={device}",
+         f"-sOutputFile={out_path}", pdf_source],
+        check=True, capture_output=True,
+    )
 
 
 def md5_hash(file_path, chunk_size=8192):
