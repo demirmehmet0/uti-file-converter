@@ -9,7 +9,7 @@ from sdks.novavision.src.base.component import Component
 from sdks.novavision.src.helper.executor import Executor
 from components.FileConverter.src.models.PackageModel import PackageModel, File
 from components.FileConverter.src.utils.response import build_response_from_storage
-from components.FileConverter.src.utils.utils import convert_file, download_from_storage
+from components.FileConverter.src.utils.utils import convert_file, download_from_storage, build_options
 
 
 class FromStorage(Component):
@@ -26,7 +26,8 @@ class FromStorage(Component):
 
     def run(self):
         source_path = download_from_storage(self.storage_id)
-        result = convert_file(source_path, self.target_format)
+        options = build_options(self.request, self.target_format)
+        result = convert_file(source_path, self.target_format, options)
         self.file = File(
             uID=str(uuid.uuid4()),
             name=result["name"],

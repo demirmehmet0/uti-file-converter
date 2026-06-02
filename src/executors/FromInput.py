@@ -9,7 +9,7 @@ from sdks.novavision.src.base.component import Component
 from sdks.novavision.src.helper.executor import Executor
 from components.FileConverter.src.models.PackageModel import PackageModel, File
 from components.FileConverter.src.utils.response import build_response_from_input
-from components.FileConverter.src.utils.utils import convert_file, resolve_source_path
+from components.FileConverter.src.utils.utils import convert_file, resolve_source_path, build_options
 
 
 class FromInput(Component):
@@ -26,7 +26,8 @@ class FromInput(Component):
 
     def run(self):
         source_path = resolve_source_path(self.input_file)
-        result = convert_file(source_path, self.target_format)
+        options = build_options(self.request, self.target_format)
+        result = convert_file(source_path, self.target_format, options)
         self.file = File(
             uID=str(uuid.uuid4()),
             name=result["name"],

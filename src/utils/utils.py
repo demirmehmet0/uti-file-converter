@@ -85,11 +85,47 @@ def resolve_source_path(input_file):
     return getattr(input_file, "path", None)
 
 
-def convert_file(source_path, target_value):
+def _param(request, name, default=None):
+    """Safely read a request param; return default if absent or on error."""
+    try:
+        value = request.get_param(name)
+    except Exception:
+        return default
+    return default if value is None else value
+
+
+def build_options(request, target_value):
+    """Collect the format-specific parameters relevant to target_value.
+
+    Only the params that belong to the chosen format are queried, so formats
+    without extra settings (txt, docx, pdf, ps) yield an empty dict.
+    """
+    target_ext = MIME_TO_EXT.get(target_value, target_value)
+    options = {}
+
+    if target_ext in ("jpg", "jpeg", "webp"):
+        options["quality"] = int(_param(request, "ConfigQuality", 90))
+    elif target_ext == "png":
+        options["compression"] = int(_param(request, "ConfigCompression", 6))
+    elif target_ext in PRINTER_EXTS and target_ext != "ps":
+        options["dpi"] = int(_param(request, "ConfigResolution", 300))
+        options["page_size"] = _param(request, "ConfigPageSize", "A4")
+        options["color_space"] = int(_param(request, "ConfigColorSpace", 19))
+        options["duplex"] = int(_param(request, "ConfigDuplex", 0))
+        options["media_position"] = int(_param(request, "ConfigMediaPosition", 0))
+        options["media_type"] = int(_param(request, "ConfigMediaType", 0))
+
+    return options
+
+
+def convert_file(source_path, target_value, options=None):
     """Convert source_path into target_value and write it under OUTPUT_DIR.
 
-    Returns a dict describing the produced file: name, path, mimeType, ext.
+    `options` carries the format-specific parameters collected from the request
+    (see build_options). Returns a dict: name, path, mimeType, ext.
     """
+    options = options or {}
+
     if not source_path or not os.path.exists(source_path):
         raise FileNotFoundError(f"FileConverter - Source file not found: {source_path}")
 
@@ -101,11 +137,11 @@ def convert_file(source_path, target_value):
     out_path = os.path.join(OUTPUT_DIR, out_name)
 
     if target_ext in IMAGE_EXTS:
-        _convert_image(source_path, out_path, target_ext)
+        _convert_image(source_path, out_path, target_ext, options)
     elif target_ext in DOCUMENT_EXTS:
         _convert_document(source_path, target_ext, out_path)
     elif target_ext in PRINTER_EXTS:
-        _convert_printer(source_path, out_path, target_ext)
+        _convert_printer(source_path, out_path, target_ext, options)
     elif target_ext == "bin":
         shutil.copyfile(source_path, out_path)  # raw passthrough
     else:
@@ -119,14 +155,23 @@ def convert_file(source_path, target_value):
     }
 
 
-def _convert_image(source_path, out_path, target_ext):
-    """Image -> image via Pillow."""
+def _convert_image(source_path, out_path, target_ext, options):
+    """Image -> image via Pillow, honouring quality / compression options."""
     img = PILImage.open(source_path)
     save_fmt = "JPEG" if target_ext in ("jpg", "jpeg") else target_ext.upper()
-    # JPEG/BMP have no alpha channel; flatten transparency before saving.
-    if save_fmt in ("JPEG", "BMP") and img.mode in ("RGBA", "LA", "P"):
-        img = img.convert("RGB")
-    img.save(out_path, save_fmt)
+    save_kwargs = {}
+
+    if save_fmt == "JPEG":
+        # JPEG has no alpha channel; flatten transparency first.
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        save_kwargs["quality"] = int(options.get("quality", 90))
+    elif save_fmt == "WEBP":
+        save_kwargs["quality"] = int(options.get("quality", 90))
+    elif save_fmt == "PNG":
+        save_kwargs["compress_level"] = int(options.get("compression", 6))
+
+    img.save(out_path, save_fmt, **save_kwargs)
 
 
 def _resolve_binary(*names):
@@ -164,15 +209,54 @@ def _convert_document(source_path, target_ext, out_path):
         shutil.move(produced, out_path)
 
 
-# Ghostscript output device for each printer/raster target. These devices ship
-# with Ghostscript itself, so no cups-filters dependency is needed.
-PRINTER_GS_DEVICE = {
-    "ps": "ps2write",
-    "pwg": "pwgraster",     # PWG Raster
-    "urf": "appleraster",   # Apple Raster (URF family)
-    "pcl": "ljet4",         # PCL5e (mono)
-    "pclxl": "pxlmono",     # PCL-XL / PCL6 (mono)
+# Physical page sizes in PostScript points (1/72 inch).
+PAGE_SIZES_PT = {
+    "A4": (595, 842),
+    "Letter": (612, 792),
 }
+
+
+def _printer_device(target_ext, is_color):
+    """Pick the Ghostscript output device for a printer target + color mode.
+
+    All of these ship with Ghostscript itself, so no cups-filters is needed.
+    Verify availability in the runtime with `gs -h` if a target errors.
+    """
+    if target_ext == "ps":
+        return "ps2write"
+    if target_ext == "pwg":
+        return "pwgraster"          # PWG Raster (color via ProcessColorModel)
+    if target_ext == "urf":
+        return "appleraster"        # Apple Raster / URF
+    if target_ext == "pcl":
+        return "cljet5" if is_color else "ljet4"    # PCL5
+    if target_ext == "pclxl":
+        return "pxlcolor" if is_color else "pxlmono"  # PCL-XL / PCL6
+    raise ValueError(f"FileConverter - Unsupported printer format: {target_ext}")
+
+
+def _setpagedevice(options):
+    """Build a PostScript setpagedevice snippet from the print-job options.
+
+    Ghostscript's raster devices fold these keys into the CUPS/PWG page header,
+    so resolution + page size produce a correctly aligned raster (cupsWidth and
+    cupsBytesPerLine are computed by the device, which avoids stride drift).
+    """
+    color_space = int(options.get("color_space", 19))
+    is_color = color_space == 19  # 19 = sRGB, 18 = Sgray
+    page = PAGE_SIZES_PT.get(options.get("page_size", "A4"), PAGE_SIZES_PT["A4"])
+    duplex = int(options.get("duplex", 0))
+    media_type = {0: "stationery", 1: "photographic"}.get(int(options.get("media_type", 0)), "stationery")
+
+    parts = [
+        f"/PageSize [{page[0]} {page[1]}]",
+        f"/ProcessColorModel /{'DeviceRGB' if is_color else 'DeviceGray'}",
+        f"/Duplex {'true' if duplex in (1, 2) else 'false'}",
+        f"/Tumble {'true' if duplex == 2 else 'false'}",
+        f"/MediaPosition {int(options.get('media_position', 0))}",
+        f"/MediaType ({media_type})",
+    ]
+    return "<< " + " ".join(parts) + " >> setpagedevice"
 
 
 def _ensure_pdf(source_path):
@@ -199,15 +283,16 @@ def _ensure_pdf(source_path):
     return pdf_path
 
 
-def _convert_printer(source_path, out_path, target_ext):
+def _convert_printer(source_path, out_path, target_ext, options):
     """Printer/raster targets (ps, pwg, urf, pcl, pclxl) via Ghostscript.
 
-    The source is first normalised to PDF, then Ghostscript renders it with the
-    device mapped in PRINTER_GS_DEVICE. No cups-filters dependency is required.
+    The source is normalised to PDF, then Ghostscript renders it with the right
+    device and resolution; for raster/PCL targets the print-job options are
+    passed through setpagedevice so the device builds a correct page header.
     """
-    device = PRINTER_GS_DEVICE.get(target_ext)
-    if device is None:
-        raise ValueError(f"FileConverter - Unsupported printer format: {target_ext}")
+    options = options or {}
+    color_space = int(options.get("color_space", 19))
+    device = _printer_device(target_ext, is_color=(color_space == 19))
 
     gs = _resolve_binary("gs", "ghostscript")
     if gs is None:
@@ -217,11 +302,16 @@ def _convert_printer(source_path, out_path, target_ext):
         )
 
     pdf_source = _ensure_pdf(source_path)
-    subprocess.run(
-        [gs, "-dNOPAUSE", "-dBATCH", "-dSAFER", f"-sDEVICE={device}",
-         f"-sOutputFile={out_path}", pdf_source],
-        check=True, capture_output=True,
-    )
+    dpi = int(options.get("dpi", 300))
+    cmd = [gs, "-dNOPAUSE", "-dBATCH", "-dSAFER",
+           f"-sDEVICE={device}", f"-r{dpi}", f"-sOutputFile={out_path}"]
+
+    if target_ext == "ps":
+        cmd += [pdf_source]  # ps2write does not rasterize; page-device hints n/a
+    else:
+        cmd += ["-c", _setpagedevice(options), "-f", pdf_source]
+
+    subprocess.run(cmd, check=True, capture_output=True)
 
 
 def md5_hash(file_path, chunk_size=8192):
