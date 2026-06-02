@@ -105,7 +105,6 @@ class ConfigResolution(Config):
         pixel canvas size from the physical page size.
     """
     name: Literal["ConfigResolution"] = "ConfigResolution"
-    group: Literal["Geometry"] = "Geometry"
     value: Union[OptionDpi300, OptionDpi600]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -140,7 +139,6 @@ class ConfigPageSize(Config):
         as (PageSize * DPI) / 72.
     """
     name: Literal["ConfigPageSize"] = "ConfigPageSize"
-    group: Literal["Geometry"] = "Geometry"
     value: Union[OptionPageA4, OptionPageLetter]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -176,7 +174,6 @@ class ConfigColorSpace(Config):
         cupsBitsPerColor is fixed at 8.
     """
     name: Literal["ConfigColorSpace"] = "ConfigColorSpace"
-    group: Literal["Color"] = "Color"
     value: Union[OptionColorSRGB, OptionColorSGray]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -219,7 +216,6 @@ class OptionDuplexTumble(Config):
 class ConfigDuplex(Config):
     """Duplex (double-sided) printing mode."""
     name: Literal["ConfigDuplex"] = "ConfigDuplex"
-    group: Literal["PrintJob"] = "PrintJob"
     value: Union[OptionDuplexSimplex, OptionDuplexNoTumble, OptionDuplexTumble]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -261,7 +257,6 @@ class OptionTrayAlternate(Config):
 class ConfigMediaPosition(Config):
     """MediaPosition (input tray)."""
     name: Literal["ConfigMediaPosition"] = "ConfigMediaPosition"
-    group: Literal["PrintJob"] = "PrintJob"
     value: Union[OptionTrayAuto, OptionTrayMain, OptionTrayAlternate]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
@@ -293,7 +288,6 @@ class OptionMediaPhoto(Config):
 class ConfigMediaType(Config):
     """MediaType. Photo lets the printer raise quality / reduce droplet size."""
     name: Literal["ConfigMediaType"] = "ConfigMediaType"
-    group: Literal["PrintJob"] = "PrintJob"
     value: Union[OptionMediaPlain, OptionMediaPhoto]
     type: Literal["object"] = "object"
     field: Literal["dropdownlist"] = "dropdownlist"
