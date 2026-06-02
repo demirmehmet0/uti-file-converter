@@ -9,8 +9,6 @@ import subprocess
 
 from PIL import Image as PILImage
 
-from sdks.novavision.src.helper.package import PackageHelper
-
 OUTPUT_DIR = "/storage/FileConverter/"
 
 # Dropdown values arrive either as a plain extension ("png") or as a MIME type
@@ -60,6 +58,9 @@ def download_from_storage(storageID):
     Mirrors VideoFeed's storage handling: re-download only when the file is
     missing or its MD5 no longer matches the stored hash.
     """
+    # Imported lazily so the conversion helpers can be used/tested without the SDK.
+    from sdks.novavision.src.helper.package import PackageHelper
+
     result = PackageHelper.get_storage_details(storageID)
     data = result["data"]
     url_path = result["data_url"]
@@ -244,12 +245,12 @@ def _setpagedevice(options):
     """
     color_space = int(options.get("color_space", 19))
     is_color = color_space == 19  # 19 = sRGB, 18 = Sgray
-    page = PAGE_SIZES_PT.get(options.get("page_size", "A4"), PAGE_SIZES_PT["A4"])
     duplex = int(options.get("duplex", 0))
     media_type = {0: "stationery", 1: "photographic"}.get(int(options.get("media_type", 0)), "stationery")
 
+    # Page size is fixed via -dDEVICEWIDTHPOINTS/HEIGHTPOINTS on the command line
+    # (so -dFIXEDMEDIA honours it); only the non-geometry job options go here.
     parts = [
-        f"/PageSize [{page[0]} {page[1]}]",
         f"/ProcessColorModel /{'DeviceRGB' if is_color else 'DeviceGray'}",
         f"/Duplex {'true' if duplex in (1, 2) else 'false'}",
         f"/Tumble {'true' if duplex == 2 else 'false'}",
@@ -309,7 +310,15 @@ def _convert_printer(source_path, out_path, target_ext, options):
     if target_ext == "ps":
         cmd += [pdf_source]  # ps2write does not rasterize; page-device hints n/a
     else:
-        cmd += ["-c", _setpagedevice(options), "-f", pdf_source]
+        # Force the chosen page size and scale the source to fit it. Without
+        # this, Ghostscript keeps the PDF's own MediaBox, so an image-sized page
+        # is emitted instead of A4 and the printer (expecting A4) ejects a
+        # blank/garbled sheet. The size must be set via DEVICEWIDTH/HEIGHTPOINTS
+        # *before* -dFIXEDMEDIA, otherwise FIXEDMEDIA locks the default (Letter).
+        page = PAGE_SIZES_PT.get(options.get("page_size", "A4"), PAGE_SIZES_PT["A4"])
+        cmd += [f"-dDEVICEWIDTHPOINTS={page[0]}", f"-dDEVICEHEIGHTPOINTS={page[1]}",
+                "-dFIXEDMEDIA", "-dPDFFitPage",
+                "-c", _setpagedevice(options), "-f", pdf_source]
 
     subprocess.run(cmd, check=True, capture_output=True)
 
