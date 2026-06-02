@@ -1,5 +1,5 @@
 from typing import Optional, Union, Literal, List
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, Field, validator
 
 from sdks.novavision.src.base.model import (
     Package,
