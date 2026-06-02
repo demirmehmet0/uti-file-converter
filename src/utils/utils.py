@@ -210,54 +210,44 @@ def _convert_document(source_path, target_ext, out_path):
         shutil.move(produced, out_path)
 
 
-# Physical page sizes in PostScript points (1/72 inch).
-PAGE_SIZES_PT = {
-    "A4": (595, 842),
-    "Letter": (612, 792),
+# Standard pixel dimensions at 300 DPI (industry reference).
+# Point values are derived from these at render time so gs always produces
+# exact integer pixel counts: pt = px * 72 / dpi  (e.g. 2480*72/300 = 595.2)
+PAGE_PIXELS_300 = {
+    "A4": (2480, 3508),
+    "Letter": (2550, 3300),
 }
+
+
+def _page_points(page_key, dpi):
+    """Return (width_pt, height_pt) that yield exact integer pixels at dpi."""
+    base_w, base_h = PAGE_PIXELS_300.get(page_key, PAGE_PIXELS_300["A4"])
+    scale = dpi / 300
+    w_px = round(base_w * scale)
+    h_px = round(base_h * scale)
+    return (w_px * 72 / dpi, h_px * 72 / dpi)
 
 
 def _printer_device(target_ext, is_color):
     """Pick the Ghostscript output device for a printer target + color mode.
 
-    All of these ship with Ghostscript itself, so no cups-filters is needed.
-    Verify availability in the runtime with `gs -h` if a target errors.
+    ps/urf/pcl/pclxl use devices that ship with vanilla Ghostscript. Only
+    `pwgraster` requires a CUPS-enabled gs build (--enable-cups); verify with
+    `gs -h | grep pwgraster` in the runtime. If pwgraster is missing, target
+    `urf` instead — AirPrint printers accept image/urf as well.
     """
     if target_ext == "ps":
         return "ps2write"
     if target_ext == "pwg":
-        return "pwgraster"          # PWG Raster (color via ProcessColorModel)
+        return "pwgraster"                            # PWG Raster (CUPS build only)
     if target_ext == "urf":
-        return "appleraster"        # Apple Raster / URF
+        return "urfrgb" if is_color else "urfgray"    # Apple Raster / URF (native)
     if target_ext == "pcl":
-        return "cljet5" if is_color else "ljet4"    # PCL5
+        return "cljet5" if is_color else "ljet4"      # PCL5
     if target_ext == "pclxl":
         return "pxlcolor" if is_color else "pxlmono"  # PCL-XL / PCL6
     raise ValueError(f"FileConverter - Unsupported printer format: {target_ext}")
 
-
-def _setpagedevice(options):
-    """Build a PostScript setpagedevice snippet from the print-job options.
-
-    Ghostscript's raster devices fold these keys into the CUPS/PWG page header,
-    so resolution + page size produce a correctly aligned raster (cupsWidth and
-    cupsBytesPerLine are computed by the device, which avoids stride drift).
-    """
-    color_space = int(options.get("color_space", 19))
-    is_color = color_space == 19  # 19 = sRGB, 18 = Sgray
-    duplex = int(options.get("duplex", 0))
-    media_type = {0: "stationery", 1: "photographic"}.get(int(options.get("media_type", 0)), "stationery")
-
-    # Page size is fixed via -dDEVICEWIDTHPOINTS/HEIGHTPOINTS on the command line
-    # (so -dFIXEDMEDIA honours it); only the non-geometry job options go here.
-    parts = [
-        f"/ProcessColorModel /{'DeviceRGB' if is_color else 'DeviceGray'}",
-        f"/Duplex {'true' if duplex in (1, 2) else 'false'}",
-        f"/Tumble {'true' if duplex == 2 else 'false'}",
-        f"/MediaPosition {int(options.get('media_position', 0))}",
-        f"/MediaType ({media_type})",
-    ]
-    return "<< " + " ".join(parts) + " >> setpagedevice"
 
 
 def _ensure_pdf(source_path):
@@ -292,8 +282,10 @@ def _convert_printer(source_path, out_path, target_ext, options):
     passed through setpagedevice so the device builds a correct page header.
     """
     options = options or {}
+    dpi = int(options.get("dpi", 300))
     color_space = int(options.get("color_space", 19))
-    device = _printer_device(target_ext, is_color=(color_space == 19))
+    is_color = color_space == 19   # ConfigColorSpace: 19=sRGB, 18=sGray
+    device = _printer_device(target_ext, is_color=is_color)
 
     gs = _resolve_binary("gs", "ghostscript")
     if gs is None:
@@ -303,24 +295,53 @@ def _convert_printer(source_path, out_path, target_ext, options):
         )
 
     pdf_source = _ensure_pdf(source_path)
-    dpi = int(options.get("dpi", 300))
-    cmd = [gs, "-dNOPAUSE", "-dBATCH", "-dSAFER",
-           f"-sDEVICE={device}", f"-r{dpi}", f"-sOutputFile={out_path}"]
+    base = [gs, "-dNOPAUSE", "-dBATCH", "-dSAFER", f"-sDEVICE={device}", f"-r{dpi}"]
 
     if target_ext == "ps":
-        cmd += [pdf_source]  # ps2write does not rasterize; page-device hints n/a
+        cmd = base + [f"-sOutputFile={out_path}", pdf_source]
     else:
-        # Force the chosen page size and scale the source to fit it. Without
-        # this, Ghostscript keeps the PDF's own MediaBox, so an image-sized page
-        # is emitted instead of A4 and the printer (expecting A4) ejects a
-        # blank/garbled sheet. The size must be set via DEVICEWIDTH/HEIGHTPOINTS
-        # *before* -dFIXEDMEDIA, otherwise FIXEDMEDIA locks the default (Letter).
-        page = PAGE_SIZES_PT.get(options.get("page_size", "A4"), PAGE_SIZES_PT["A4"])
-        cmd += [f"-dDEVICEWIDTHPOINTS={page[0]}", f"-dDEVICEHEIGHTPOINTS={page[1]}",
-                "-dFIXEDMEDIA", "-dPDFFitPage",
-                "-c", _setpagedevice(options), "-f", pdf_source]
+        # Exact point values computed from target pixel counts to prevent
+        # the 1-pixel stride misalignment caused by integer rounding.
+        w_pt, h_pt = _page_points(options.get("page_size", "A4"), dpi)
+        geometry = [
+            f"-dDEVICEWIDTHPOINTS={w_pt}",
+            f"-dDEVICEHEIGHTPOINTS={h_pt}",
+            "-dFIXEDMEDIA",
+            "-dPDFFitPage",
+        ]
 
-    subprocess.run(cmd, check=True, capture_output=True)
+        if target_ext == "pwg":
+            # CUPS pwgraster device only. The printer advertises srgb_8 / sgray_8
+            # (pwg-raster-document-type-supported), so cupsColorSpace must stay
+            # 19 (sRGB, 24bpp) or 18 (sGray, 8bpp) — NOT plain RGB(1)/W(0).
+            #
+            # Do NOT set -sProcessColorModel here: the cups device derives its
+            # colour model from cupsColorSpace, and forcing ProcessColorModel
+            # makes gs reject sRGB with a rangecheck -> "Ghostscript failed
+            # (exit 255)". cupsColorOrder=0 = chunky/packed (R G B R G B …).
+            cups_color_space = 19 if is_color else 18
+            cmd = base + geometry + [
+                f"-dcupsColorSpace={cups_color_space}",
+                "-dcupsBitsPerColor=8",
+                "-dcupsColorOrder=0",
+                f"-sOutputFile={out_path}",
+                pdf_source,
+            ]
+        else:
+            # urf (native urfrgb/urfgray) and pcl/pclxl: the colour model is
+            # fixed by the device name itself, so cups* params and
+            # ProcessColorModel don't apply (and forcing the latter errors on
+            # mono devices such as ljet4/pxlmono/urfgray).
+            cmd = base + geometry + [f"-sOutputFile={out_path}", pdf_source]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"FileConverter - Ghostscript failed (exit {result.returncode}):\n"
+            f"CMD: {' '.join(cmd)}\n"
+            f"STDERR: {result.stderr.strip()}\n"
+            f"STDOUT: {result.stdout.strip()}"
+        )
 
 
 def md5_hash(file_path, chunk_size=8192):
