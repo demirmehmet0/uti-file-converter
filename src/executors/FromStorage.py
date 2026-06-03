@@ -38,7 +38,7 @@ class FromStorage(Component):
             value=content,
         )
         self.file = BinaryFile.set_frame(
-            self.file, package_uID=self.uID, redis_db=self.redis_db
+            self.file, package_uid=self.uID, redis_db=self.redis_db
         )
 
         try:

@@ -1,5 +1,5 @@
 from typing import Optional, Union, Literal, Dict
-from pydantic import validator
+from pydantic import Field, validator
 
 from sdks.novavision.src.base.model import (
     Package,
@@ -14,20 +14,9 @@ from sdks.novavision.src.base.model import (
     BinaryFile,
 )
 
-
-# ---------------------------------------------------------------------------
-# Data carrier
-# ---------------------------------------------------------------------------
-# Files travel between packages exactly like images: the raw bytes are stored
-# in Redis and only a reference (`r_key`) + metadata ride in the response.
-# `BinaryFile` (base model) is that carrier; a downstream package re-hydrates
-# the bytes from Redis instead of reading a /storage path.
 File = BinaryFile
 
 
-# ---------------------------------------------------------------------------
-# Inputs
-# ---------------------------------------------------------------------------
 class InputFile(Input):
     name: Literal["inputFile"] = "inputFile"
     value: Union[Dict, BinaryFile]
@@ -44,9 +33,6 @@ class InputFile(Input):
         title = "File"
 
 
-# ---------------------------------------------------------------------------
-# Outputs
-# ---------------------------------------------------------------------------
 class OutputFile(Output):
     name: Literal["outputFile"] = "outputFile"
     value: Union[Dict, BinaryFile]
@@ -63,16 +49,6 @@ class OutputFile(Output):
         title = "File"
 
 
-# ---------------------------------------------------------------------------
-# Shared format parameters (shown as dependent sub-fields under a format option)
-#
-# cupsWidth / cupsHeight / cupsBitsPerPixel / cupsBytesPerLine are NOT exposed
-# here: they are derived in code from the choices below (see utils.py), e.g.
-#   cupsWidth        = round(PageSize_pt[0] * dpi / 72)
-#   cupsBytesPerLine = cupsWidth * cupsBitsPerPixel / 8   (padded, no remainder)
-# ---------------------------------------------------------------------------
-
-# --- Geometry & Resolution --------------------------------------------------
 class OptionDpi300(Config):
     name: Literal["300"] = "300"
     value: Literal["300"] = "300"
@@ -143,10 +119,9 @@ class ConfigPageSize(Config):
         title = "Page Size"
 
 
-# --- Color & Bit Depth ------------------------------------------------------
 class OptionColorSRGB(Config):
     name: Literal["sRGB"] = "sRGB"
-    value: Literal["19"] = "19"  # cupsColorSpace 19 = sRGB
+    value: Literal["19"] = "19"  
     type: Literal["string"] = "string"
     field: Literal["option"] = "option"
 
@@ -156,7 +131,7 @@ class OptionColorSRGB(Config):
 
 class OptionColorSGray(Config):
     name: Literal["Sgray"] = "Sgray"
-    value: Literal["18"] = "18"  # cupsColorSpace 18 = Sgray
+    value: Literal["18"] = "18"  
     type: Literal["string"] = "string"
     field: Literal["option"] = "option"
 
@@ -179,7 +154,6 @@ class ConfigColorSpace(Config):
         title = "Color Space"
 
 
-# --- Print Job Options ------------------------------------------------------
 class OptionDuplexSimplex(Config):
     name: Literal["Simplex"] = "Simplex"
     value: Literal["0"] = "0"
@@ -296,7 +270,6 @@ class ConfigMediaType(Config):
         title = "Media Type"
 
 
-# --- Image encoding parameters ----------------------------------------------
 class ConfigQuality(Config):
     """Lossy encoding quality (JPEG/WEBP), 1-100."""
     name: Literal["ConfigQuality"] = "ConfigQuality"
@@ -319,13 +292,6 @@ class ConfigCompression(Config):
         title = "Compression Level"
 
 
-# ---------------------------------------------------------------------------
-# Target format options (dependentDropdownlist)
-#
-# Each option's `value` is the format key the executor reads. Options that need
-# extra settings attach them as dependent sub-fields, which the web form reveals
-# only when that format is selected.
-# ---------------------------------------------------------------------------
 class OptionPdf(Config):
     name: Literal["pdf"] = "pdf"
     value: Literal["pdf"] = "pdf"
@@ -534,9 +500,6 @@ class ConfigTargetFormat(Config):
         title = "Target Format"
 
 
-# ---------------------------------------------------------------------------
-# FromStorage file source (filePicker widget)
-# ---------------------------------------------------------------------------
 class StorageSource(Config):
     """
         Select a file from the storage to be converted.
@@ -558,9 +521,6 @@ class StorageSource(Config):
         title = "Storage Source"
 
 
-# ---------------------------------------------------------------------------
-# FromInput executor: source file arrives through an input
-# ---------------------------------------------------------------------------
 class FromInputConfigs(Configs):
     configTargetFormat: ConfigTargetFormat
 
@@ -602,9 +562,6 @@ class FromInputExecutor(Config):
         }
 
 
-# ---------------------------------------------------------------------------
-# FromStorage executor: source file picked from storage via config
-# ---------------------------------------------------------------------------
 class FromStorageConfigs(Configs):
     storageSource: StorageSource
     configTargetFormat: ConfigTargetFormat
@@ -642,9 +599,6 @@ class FromStorageExecutor(Config):
         }
 
 
-# ---------------------------------------------------------------------------
-# Package wiring
-# ---------------------------------------------------------------------------
 class ConfigExecutor(Config):
     """
         Selects how the source file is provided to the converter.
