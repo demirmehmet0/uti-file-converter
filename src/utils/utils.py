@@ -147,6 +147,19 @@ def build_options(request, target_value):
     return options
 
 
+def _convert_image_to_document(source_path, target_ext, out_path):
+    """Image → document via a PDF intermediate (Pillow → LibreOffice)."""
+    tmp_pdf = _ensure_pdf(source_path)
+    try:
+        if target_ext == "pdf":
+            shutil.copyfile(tmp_pdf, out_path)
+        else:
+            _convert_document(tmp_pdf, target_ext, out_path)
+    finally:
+        if tmp_pdf != source_path and os.path.exists(tmp_pdf):
+            os.remove(tmp_pdf)
+
+
 def convert_file(source_path, target_value, options=None):
     """Convert source_path into target_value and write it under OUTPUT_DIR.
 
@@ -165,16 +178,27 @@ def convert_file(source_path, target_value, options=None):
     out_name = f"{base}_{uuid.uuid4().hex[:8]}.{target_ext}"
     out_path = os.path.join(OUTPUT_DIR, out_name)
 
-    if target_ext in IMAGE_EXTS:
+    src_ext = os.path.splitext(source_path)[1].lower().lstrip(".")
+
+    if src_ext == target_ext:
+        shutil.copyfile(source_path, out_path)
+    elif target_ext in IMAGE_EXTS:
         _convert_image(source_path, out_path, target_ext, options)
+    elif target_ext in DOCUMENT_EXTS and src_ext in IMAGE_EXTS:
+        _convert_image_to_document(source_path, target_ext, out_path)
     elif target_ext in DOCUMENT_EXTS:
         _convert_document(source_path, target_ext, out_path)
     elif target_ext in PRINTER_EXTS:
         _convert_printer(source_path, out_path, target_ext, options)
     elif target_ext == "bin":
-        shutil.copyfile(source_path, out_path)  # raw passthrough
+        shutil.copyfile(source_path, out_path)
     else:
         raise ValueError(f"FileConverter - Unsupported target format: {target_value}")
+
+    if not os.path.exists(out_path):
+        raise RuntimeError(
+            f"FileConverter - Conversion produced no output: {source_path} -> {target_ext}"
+        )
 
     return {
         "name": out_name,
@@ -226,16 +250,53 @@ def _convert_document(source_path, target_ext, out_path):
         )
 
     out_dir = os.path.dirname(out_path)
-    subprocess.run(
-        [soffice, "--headless", "--convert-to", target_ext,
-         "--outdir", out_dir, source_path],
-        check=True, capture_output=True,
-    )
+    cmd = [soffice, "--headless", "--convert-to", target_ext, "--outdir", out_dir, source_path]
+
+    print(f"[FileConverter] CMD: {' '.join(cmd)}", flush=True)
+    print(f"[FileConverter] source exists: {os.path.exists(source_path)} | size: {os.path.getsize(source_path) if os.path.exists(source_path) else 'N/A'}", flush=True)
+
+    before = set(os.listdir(out_dir))
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    after = set(os.listdir(out_dir))
+    new_files = after - before
+
+    print(f"[FileConverter] returncode: {result.returncode}", flush=True)
+    print(f"[FileConverter] stdout: {result.stdout.strip()}", flush=True)
+    print(f"[FileConverter] stderr: {result.stderr.strip()}", flush=True)
+    print(f"[FileConverter] new files in {out_dir}: {new_files}", flush=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"FileConverter - LibreOffice failed (exit {result.returncode}).\n"
+            f"CMD: {' '.join(cmd)}\n"
+            f"STDOUT: {result.stdout.strip()}\n"
+            f"STDERR: {result.stderr.strip()}"
+        )
+
     produced = os.path.join(
         out_dir, os.path.splitext(os.path.basename(source_path))[0] + "." + target_ext
     )
-    if os.path.abspath(produced) != os.path.abspath(out_path) and os.path.exists(produced):
+    print(f"[FileConverter] expected produced path: {produced} | exists: {os.path.exists(produced)}", flush=True)
+
+    if os.path.abspath(produced) == os.path.abspath(out_path):
+        pass  # LibreOffice already wrote directly to out_path
+    elif os.path.exists(produced):
         shutil.move(produced, out_path)
+    elif new_files:
+        # LibreOffice wrote a file but with an unexpected name — use that.
+        actual = os.path.join(out_dir, next(iter(new_files)))
+        print(f"[FileConverter] produced path mismatch — using actual: {actual}", flush=True)
+        shutil.move(actual, out_path)
+    else:
+        raise RuntimeError(
+            f"FileConverter - LibreOffice produced no output.\n"
+            f"CMD: {' '.join(cmd)}\n"
+            f"STDOUT: {result.stdout.strip()}\n"
+            f"STDERR: {result.stderr.strip()}\n"
+            f"Expected: {produced}"
+        )
 
 
 # Standard pixel dimensions at 300 DPI (industry reference).
@@ -364,6 +425,13 @@ def _convert_printer(source_path, out_path, target_ext, options):
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        combined = result.stdout + result.stderr
+        if "Unknown device" in combined:
+            raise RuntimeError(
+                f"FileConverter - Ghostscript device '{device}' is not compiled into this build.\n"
+                f"To enable it, the container needs a Ghostscript build that includes '{device}'.\n"
+                f"Please choose a supported target format (e.g. PDF, PS, PCL)."
+            )
         raise RuntimeError(
             f"FileConverter - Ghostscript failed (exit {result.returncode}):\n"
             f"CMD: {' '.join(cmd)}\n"
