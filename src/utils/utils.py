@@ -10,6 +10,7 @@ import subprocess
 from PIL import Image as PILImage
 
 OUTPUT_DIR = "/storage/FileConverter/"
+MIME_OCTET_STREAM = "application/octet-stream"
 
 # Dropdown values arrive either as a plain extension ("png") or as a MIME type
 # ("image/jpeg"). Normalise everything to a canonical extension.
@@ -17,12 +18,11 @@ MIME_TO_EXT = {
     "application/pdf": "pdf",
     "image/jpeg": "jpg",
     "image/pwg-raster": "pwg",
-    "image/urf": "urf",
     "application/vnd.hp-pcl": "pcl",
     "application/pcl": "pcl",
     "application/postscript": "ps",
     "application/vnd.hp-pclxl": "pclxl",
-    "application/octet-stream": "bin",
+    MIME_OCTET_STREAM: "bin",
     # already-extension values map to themselves
     "pdf": "pdf",
     "docx": "docx",
@@ -43,16 +43,15 @@ EXT_TO_MIME = {
     "pcl": "application/vnd.hp-pcl",
     "pclxl": "application/vnd.hp-pclxl",
     "pwg": "image/pwg-raster",
-    "urf": "image/urf",
-    "bin": "application/octet-stream",
+    "bin": MIME_OCTET_STREAM,
 }
 
 IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "bmp", "tiff", "gif"}
 DOCUMENT_EXTS = {"pdf", "docx", "txt", "odt", "rtf", "html"}
-PRINTER_EXTS = {"ps", "pcl", "pclxl", "pwg", "urf"}
+PRINTER_EXTS = {"ps", "pcl", "pclxl", "pwg"}
 
 
-def download_from_storage(storageID):
+def download_from_storage(storage_id):
     """Resolve a storage entry to a local /storage path, downloading if needed.
 
     Mirrors VideoFeed's storage handling: re-download only when the file is
@@ -61,7 +60,7 @@ def download_from_storage(storageID):
     # Imported lazily so the conversion helpers can be used/tested without the SDK.
     from sdks.novavision.src.helper.package import PackageHelper
 
-    result = PackageHelper.get_storage_details(storageID)
+    result = PackageHelper.get_storage_details(storage_id)
     data = result["data"]
     url_path = result["data_url"]
     file_path = f"/storage/{data['name']}"
@@ -203,7 +202,7 @@ def convert_file(source_path, target_value, options=None):
     return {
         "name": out_name,
         "path": out_path,
-        "mimeType": EXT_TO_MIME.get(target_ext, "application/octet-stream"),
+        "mimeType": EXT_TO_MIME.get(target_ext, MIME_OCTET_STREAM),
         "ext": target_ext,
     }
 
@@ -318,23 +317,15 @@ def _page_points(page_key, dpi):
 
 
 def _printer_device(target_ext, is_color):
-    """Pick the Ghostscript output device for a printer target + color mode.
-
-    ps/urf/pcl/pclxl use devices that ship with vanilla Ghostscript. Only
-    `pwgraster` requires a CUPS-enabled gs build (--enable-cups); verify with
-    `gs -h | grep pwgraster` in the runtime. If pwgraster is missing, target
-    `urf` instead — AirPrint printers accept image/urf as well.
-    """
+    """Pick the Ghostscript output device for a printer target + color mode."""
     if target_ext == "ps":
         return "ps2write"
     if target_ext == "pwg":
-        return "pwgraster"                            # PWG Raster (CUPS build only)
-    if target_ext == "urf":
-        return "urfrgb" if is_color else "urfgray"    # Apple Raster / URF (native)
+        return "pwgraster"
     if target_ext == "pcl":
-        return "cljet5" if is_color else "ljet4"      # PCL5
+        return "cljet5" if is_color else "ljet4"
     if target_ext == "pclxl":
-        return "pxlcolor" if is_color else "pxlmono"  # PCL-XL / PCL6
+        return "pxlcolor" if is_color else "pxlmono"
     raise ValueError(f"FileConverter - Unsupported printer format: {target_ext}")
 
 
@@ -364,7 +355,7 @@ def _ensure_pdf(source_path):
 
 
 def _convert_printer(source_path, out_path, target_ext, options):
-    """Printer/raster targets (ps, pwg, urf, pcl, pclxl) via Ghostscript.
+    """Printer/raster targets (ps, pwg, pcl, pclxl) via Ghostscript.
 
     The source is normalised to PDF, then Ghostscript renders it with the right
     device and resolution; for raster/PCL targets the print-job options are
@@ -417,10 +408,7 @@ def _convert_printer(source_path, out_path, target_ext, options):
                 pdf_source,
             ]
         else:
-            # urf (native urfrgb/urfgray) and pcl/pclxl: the colour model is
-            # fixed by the device name itself, so cups* params and
-            # ProcessColorModel don't apply (and forcing the latter errors on
-            # mono devices such as ljet4/pxlmono/urfgray).
+            # pcl/pclxl: the colour model is fixed by the device name itself.
             cmd = base + geometry + [f"-sOutputFile={out_path}", pdf_source]
 
     result = subprocess.run(cmd, capture_output=True, text=True)

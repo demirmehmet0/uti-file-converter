@@ -381,22 +381,6 @@ class OptionPwgRaster(Config):
         title = "PWG Raster"
 
 
-class OptionUrf(Config):
-    name: Literal["urf"] = "urf"
-    configResolution: ConfigResolution
-    configPageSize: ConfigPageSize
-    configColorSpace: ConfigColorSpace
-    configDuplex: ConfigDuplex
-    configMediaPosition: ConfigMediaPosition
-    configMediaType: ConfigMediaType
-    value: Literal["image/urf"] = "image/urf"
-    type: Literal["string"] = "string"
-    field: Literal["option"] = "option"
-
-    class Config:
-        title = "Apple URF"
-
-
 class OptionHpPcl(Config):
     name: Literal["hpPcl"] = "hpPcl"
     configResolution: ConfigResolution
@@ -485,7 +469,6 @@ class ConfigTargetFormat(Config):
         OptionWebp,
         OptionApplicationPdf,
         OptionPwgRaster,
-        OptionUrf,
         OptionHpPcl,
         OptionPcl,
         OptionPostscript,
